@@ -17,6 +17,19 @@ import cv2
 from PIL import Image, ImageTk
 
 
+def _find_binary(name: str) -> str:
+    path = shutil.which(name)
+    if path is None:
+        raise RuntimeError(f"'{name}' not found. Install ffmpeg: brew install ffmpeg")
+    return path
+
+FFPROBE = _find_binary("ffprobe")
+FFMPEG  = _find_binary("ffmpeg")
+
+PROJECT_DIR = Path(__file__).parent
+OUTPUT_DIR = PROJECT_DIR / "output"
+
+
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
@@ -44,14 +57,7 @@ class VideoState:
     out_scale: int = 50        # percent
     out_path: str = ""
 
-    def reset(self):
-        """Reset selection state (for new file)."""
-        self.start_time = 0.0
-        self.end_time = self.duration
-        self.crop_x = self.crop_y = self.crop_w = self.crop_h = 0
-        self.canvas_scale = 1.0
-
-    def video_coords_from_display(self, cx, cy, cw, ch, canvas_w, canvas_h):
+    def video_coords_from_display(self, cx, cy, cw, ch):
         """Convert canvas crop rect to display-space video coordinates."""
         if self.canvas_scale <= 0:
             return (0, 0, self.display_width, self.display_height)
@@ -71,13 +77,11 @@ class VideoState:
 # ---------------------------------------------------------------------------
 
 class VideoProbe:
-    FFPROBE = "/opt/homebrew/bin/ffprobe"
-
     @staticmethod
     def probe(path: str) -> VideoState:
         """Run ffprobe and return a populated VideoState."""
         cmd = [
-            VideoProbe.FFPROBE,
+            FFPROBE,
             "-v", "quiet",
             "-print_format", "json",
             "-show_streams",
@@ -140,7 +144,7 @@ class VideoProbe:
             fps=fps,
         )
         state.end_time = duration
-        state.out_path = f"output/{Path(path).stem}.gif"
+        state.out_path = str(OUTPUT_DIR / f"{Path(path).stem}.gif")
         return state
 
 
@@ -281,7 +285,7 @@ class TimelineSliders:
         """Configure sliders for a newly loaded video."""
         self.state = state
         duration = state.duration
-        steps = min(int(duration * 20), 1000)
+        steps = max(1, min(int(duration * 20), 1000))
 
         self.start_slider.configure(from_=0, to=duration, number_of_steps=steps)
         self.end_slider.configure(from_=0, to=duration, number_of_steps=steps)
@@ -317,8 +321,6 @@ class TimelineSliders:
 # ---------------------------------------------------------------------------
 
 class GifConverter:
-    FFMPEG = "/opt/homebrew/bin/ffmpeg"
-
     def convert(self, state: VideoState, on_progress: callable, on_done: callable):
         """Start conversion in a daemon thread."""
         threading.Thread(
@@ -330,15 +332,9 @@ class GifConverter:
     def _run(self, state: VideoState, on_progress: callable, on_done: callable):
         tmpdir = tempfile.mkdtemp()
         try:
-            # Ensure output directory exists
-            os.makedirs("output", exist_ok=True)
-
             # --- Coordinate conversion ---
-            canvas_w = int(state.display_width * state.canvas_scale)
-            canvas_h = int(state.display_height * state.canvas_scale)
             vx, vy, vw, vh = state.video_coords_from_display(
                 state.crop_x, state.crop_y, state.crop_w, state.crop_h,
-                canvas_w, canvas_h,
             )
             has_crop = vw >= 2 and vh >= 2
 
@@ -363,6 +359,9 @@ class GifConverter:
 
             base_filter = ",".join(parts)
 
+            # Ensure output parent directory exists for custom paths
+            Path(state.out_path).parent.mkdir(parents=True, exist_ok=True)
+
             start = state.start_time
             duration = state.end_time - state.start_time
             palette_path = os.path.join(tmpdir, "palette.png")
@@ -371,7 +370,7 @@ class GifConverter:
             on_progress(0.1, "Generating palette\u2026")
             pass1_filter = f"{base_filter},palettegen=stats_mode=diff"
             cmd1 = [
-                self.FFMPEG, "-y",
+                FFMPEG, "-y",
                 "-ss", str(start),
                 "-t", str(duration),
                 "-i", state.video_path,
@@ -387,7 +386,7 @@ class GifConverter:
                 f"[x][1:v] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
             )
             cmd2 = [
-                self.FFMPEG, "-y",
+                FFMPEG, "-y",
                 "-ss", str(start),
                 "-t", str(duration),
                 "-i", state.video_path,
@@ -425,7 +424,7 @@ class App(customtkinter.CTk):
         self._build_ui()
 
         # Ensure output directory exists at startup
-        os.makedirs("output", exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def _build_ui(self):
         main_frame = customtkinter.CTkFrame(self)
@@ -602,7 +601,6 @@ class App(customtkinter.CTk):
         self.photo = ImageTk.PhotoImage(img)  # Keep reference
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
-        s = self.state_obj
         if s.crop_w > 0 and s.crop_h > 0:
             self.canvas.create_rectangle(
                 s.crop_x, s.crop_y,
@@ -655,8 +653,6 @@ class App(customtkinter.CTk):
         if not s.out_path:
             self.status_label.configure(text="No output path set.")
             return
-
-        os.makedirs("output", exist_ok=True)
 
         # Show progress bar
         self.progress_bar.pack(fill="x", padx=10, pady=5)
