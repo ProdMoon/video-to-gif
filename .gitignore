@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 output/*.gif
+.DS_Store
+convert.log
