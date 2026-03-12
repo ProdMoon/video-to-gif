@@ -359,7 +359,7 @@ class GifConverter:
             palette_path = os.path.join(tmpdir, "palette.png")
 
             # --- Pass 1: palette ---
-            on_progress(0.1, "Generating palette...")
+            on_progress(0.1, "Generating palette\u2026")
             pass1_filter = f"{base_filter},palettegen=stats_mode=diff"
             cmd1 = [
                 self.FFMPEG, "-y",
@@ -372,7 +372,7 @@ class GifConverter:
             subprocess.run(cmd1, check=True, capture_output=True)
 
             # --- Pass 2: GIF ---
-            on_progress(0.5, "Rendering GIF...")
+            on_progress(0.5, "Rendering GIF\u2026")
             pass2_lavfi = (
                 f"{base_filter} [x]; "
                 f"[x][1:v] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
