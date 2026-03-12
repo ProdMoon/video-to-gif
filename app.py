@@ -1,6 +1,7 @@
 # app.py — Video Crop → GIF Converter
 # stdlib
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -28,6 +29,13 @@ FFMPEG  = _find_binary("ffmpeg")
 
 PROJECT_DIR = Path(__file__).parent
 OUTPUT_DIR = PROJECT_DIR / "output"
+
+LOG_PATH = PROJECT_DIR / "convert.log"
+logging.basicConfig(
+    filename=str(LOG_PATH),
+    level=logging.ERROR,
+    format="%(asctime)s %(levelname)s\n%(message)s\n",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +162,8 @@ class VideoProbe:
 
 class FrameExtractor:
     @staticmethod
-    def get_frame(path: str, timestamp: float, rotation: int) -> Image.Image:
+    def get_frame(path: str, timestamp: float, rotation: int,
+                  raw_width: int = 0, raw_height: int = 0) -> Image.Image:
         """Extract and return a single PIL Image at timestamp (seconds)."""
         cap = cv2.VideoCapture(path)
         cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
@@ -168,13 +177,22 @@ class FrameExtractor:
         # BGR → RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Apply rotation
-        if rotation in (-90, 270):
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        elif rotation in (90, -270):
-            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        elif rotation in (180, -180):
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        # Apply rotation — skip if the backend (e.g. AVFoundation on macOS) already
+        # auto-rotated the frame.  For 90/270° cases the raw frame has shape
+        # (raw_height, raw_width); after auto-rotation it is (raw_width, raw_height).
+        h, w = frame.shape[:2]
+        already_rotated = (
+            raw_width > 0 and raw_height > 0
+            and abs(rotation) in (90, 270)
+            and h == raw_width and w == raw_height
+        )
+        if not already_rotated:
+            if rotation in (-90, 270):
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            elif rotation in (90, -270):
+                frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            elif rotation in (180, -180):
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
 
         return Image.fromarray(frame)
 
@@ -339,19 +357,8 @@ class GifConverter:
             has_crop = vw >= 2 and vh >= 2
 
             # --- Build filter chain ---
-            # Determine rotation filter
-            if state.rotation in (-90, 270):
-                rotation_filter = "transpose=clock"       # 90° clockwise fix
-            elif state.rotation in (90, -270):
-                rotation_filter = "transpose=cclock"      # 90° counter-clockwise fix
-            elif state.rotation in (180, -180):
-                rotation_filter = "transpose=clock,transpose=clock"  # 180°
-            else:
-                rotation_filter = None
-
+            # ffmpeg 8.0+ auto-rotates during decode; crop/scale operate in display space.
             parts = []
-            if rotation_filter:
-                parts.append(rotation_filter)
             parts.append(f"fps={state.out_fps}")
             if has_crop:
                 parts.append(f"crop={vw}:{vh}:{vx}:{vy}")   # before scale (Fix 3)
@@ -401,8 +408,10 @@ class GifConverter:
 
         except subprocess.CalledProcessError as e:
             stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else str(e)
+            logging.error("ffmpeg failed.\nCommand: %s\nStderr:\n%s", e.cmd, stderr)
             on_done(None, stderr[:300])
         except Exception as e:
+            logging.exception("Unexpected error during conversion")
             on_done(None, str(e))
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -452,7 +461,7 @@ class App(customtkinter.CTk):
         customtkinter.CTkLabel(preview_panel, text="Preview").pack(pady=(4, 2))
 
         self.canvas = tk.Canvas(preview_panel, bg="black", width=360, height=640)
-        self.canvas.pack(padx=4, pady=4)
+        self.canvas.place(relx=0.5, rely=0.5, anchor="center")
 
         # COL 1: controls panel
         controls_panel = customtkinter.CTkScrollableFrame(content_area)
@@ -587,6 +596,7 @@ class App(customtkinter.CTk):
         canvas_h = int(s.display_height * scale)
         s.canvas_scale = scale
         self.canvas.configure(width=canvas_w, height=canvas_h)
+        self.canvas.place(relx=0.5, rely=0.5, anchor="center")
         self.crop_overlay.attach(self.canvas)
         self.crop_overlay.clear()
 
@@ -594,7 +604,7 @@ class App(customtkinter.CTk):
         s = self.state_obj
         if not s.video_path:
             return
-        img = FrameExtractor.get_frame(s.video_path, timestamp, s.rotation)
+        img = FrameExtractor.get_frame(s.video_path, timestamp, s.rotation, s.raw_width, s.raw_height)
         canvas_w = int(s.display_width * s.canvas_scale)
         canvas_h = int(s.display_height * s.canvas_scale)
         img = img.resize((canvas_w, canvas_h), Image.LANCZOS)
