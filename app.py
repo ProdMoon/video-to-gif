@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog
 import tkinter as tk
