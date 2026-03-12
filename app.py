@@ -196,9 +196,8 @@ class CropOverlay:
     def _start_drag(self, event):
         self._start = (event.x, event.y)
         # Remove previous rectangle
-        if self._rect_id is not None:
-            self._canvas.delete(self._rect_id)
-            self._rect_id = None
+        self._canvas.delete("crop_rect")
+        self._rect_id = None
 
     def _update_drag(self, event):
         if self._start is None or self._canvas is None:
@@ -207,13 +206,13 @@ class CropOverlay:
         x2 = max(0, min(event.x, self._canvas.winfo_width()))
         y2 = max(0, min(event.y, self._canvas.winfo_height()))
 
-        if self._rect_id is not None:
-            self._canvas.delete(self._rect_id)
+        self._canvas.delete("crop_rect")
         self._rect_id = self._canvas.create_rectangle(
             x1, y1, x2, y2,
             dash=(4, 4),
             outline="red",
             width=2,
+            tags=("crop_rect",),
         )
 
     def _end_drag(self, event):
@@ -232,8 +231,8 @@ class CropOverlay:
 
     def clear(self):
         """Remove the rectangle and reset state."""
-        if self._canvas is not None and self._rect_id is not None:
-            self._canvas.delete(self._rect_id)
+        if self._canvas is not None:
+            self._canvas.delete("crop_rect")
         self._rect_id = None
         self._start = None
 
@@ -344,13 +343,23 @@ class GifConverter:
             has_crop = vw >= 2 and vh >= 2
 
             # --- Build filter chain ---
+            # Determine rotation filter
+            if state.rotation in (-90, 270):
+                rotation_filter = "transpose=clock"       # 90° clockwise fix
+            elif state.rotation in (90, -270):
+                rotation_filter = "transpose=cclock"      # 90° counter-clockwise fix
+            elif state.rotation in (180, -180):
+                rotation_filter = "transpose=clock,transpose=clock"  # 180°
+            else:
+                rotation_filter = None
+
             parts = []
-            if state.rotation != 0:
-                parts.append("transpose=clock")
+            if rotation_filter:
+                parts.append(rotation_filter)
             parts.append(f"fps={state.out_fps}")
-            parts.append(f"scale=iw*{state.out_scale / 100:.2f}:-1:flags=lanczos")
             if has_crop:
-                parts.append(f"crop={vw}:{vh}:{vx}:{vy}")
+                parts.append(f"crop={vw}:{vh}:{vx}:{vy}")   # before scale (Fix 3)
+            parts.append(f"scale=iw*{state.out_scale / 100:.2f}:-2:flags=lanczos")  # -2 (Fix 4)
 
             base_filter = ",".join(parts)
 
@@ -593,6 +602,14 @@ class App(customtkinter.CTk):
         self.photo = ImageTk.PhotoImage(img)  # Keep reference
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        s = self.state_obj
+        if s.crop_w > 0 and s.crop_h > 0:
+            self.canvas.create_rectangle(
+                s.crop_x, s.crop_y,
+                s.crop_x + s.crop_w, s.crop_y + s.crop_h,
+                outline="red", width=2, dash=(4, 4),
+                tags=("crop_rect",),
+            )
 
     def _on_timeline_changed(self, timestamp: float):
         self._update_preview(timestamp)
@@ -658,6 +675,8 @@ class App(customtkinter.CTk):
                 else:
                     self.status_label.configure(text=f"Saved: {path}")
                     self.progress_bar.set(1.0)
+                # Hide progress bar after a short delay
+                self.after(2000, lambda: self.progress_bar.pack_forget())
             self.after(0, _update)
 
         self.gif_converter.convert(s, on_progress, on_done)
