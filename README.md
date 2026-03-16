@@ -3,6 +3,8 @@
 동영상 파일을 GIF로 변환하는 데스크톱 앱입니다.
 구간 선택, 크롭, FPS/스케일 조절을 지원하며, ffmpeg 2-pass 인코딩으로 고품질 GIF를 생성합니다.
 
+<img width="958" height="803" alt="Image" src="https://github.com/user-attachments/assets/4efe8a24-851c-4c0c-ae13-69d61517d69b" />
+
 ![Python](https://img.shields.io/badge/Python-3.x-blue)
 
 ## 주요 기능
